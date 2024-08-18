@@ -2,9 +2,11 @@ import io
 import logging
 import os
 import threading
-from typing import List
+from typing import List, Dict, Optional
+
 
 import pandas as pd
+from pydantic import BaseModel
 from fastapi import (BackgroundTasks, FastAPI, File, HTTPException, Request,
                      UploadFile)
 from fastapi.responses import JSONResponse
@@ -26,10 +28,15 @@ class Settings(BaseSettings):
     qdrant_host: str
     qdrant_port: int
     qdrant_collection: str
-
+    embeddings_dim: Optional[int] = None
     class Config:
         env_file = ".env"
 
+
+# Model for the override request
+class OverrideRequest(BaseModel):
+    tag: str
+    synonyms: List[str]
 
 settings = Settings()
 
@@ -37,13 +44,14 @@ app = FastAPI()
 logger = logging.getLogger("fastapi")
 # In-memory storage for tags
 app.names_storage: List[str] = []
+app.manual_overrides: Dict[str, List[str]] = {}
 
 # Placeholder for the semantic search components
-embedder = Embedder(model_name=settings.model_name, cache_dir=settings.cache_dir)
+embedder = Embedder(model_name=settings.model_name, cache_dir=settings.cache_dir, target_dim=settings.embeddings_dim)
 vec_db = VecDB(host=settings.qdrant_host,
                port=settings.qdrant_port,
                collection=settings.qdrant_collection,
-               vector_size=embedder.embedding_dim)
+               vector_size=settings.embeddings_dim if settings.embeddings_dim else embedder.embedding_dim)
 app.fuzzy_matcher = FuzzyMatcher([])
 
 # Flag to track background task status
@@ -66,7 +74,8 @@ async def log_requests(request: Request, call_next):
 @app.post("/upload-csv/")
 async def upload_csv(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     if task_running.is_set():
-        raise HTTPException(status_code=400, detail="A task is already running. Please try again later.")
+        raise HTTPException(
+            status_code=400, detail="A task is already running. Please try again later.")
 
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400,
@@ -85,7 +94,8 @@ async def upload_csv(background_tasks: BackgroundTasks, file: UploadFile = File(
 
     # Return error if the collection is already existing (and it's populated)
     if vec_db.collection_exists():
-        raise HTTPException(status_code=400, detail="Collection already exists. Please delete the collection first.")
+        raise HTTPException(
+            status_code=400, detail="Collection already exists. Please delete the collection first.")
     else:
         vec_db._create_collection()
 
@@ -100,6 +110,8 @@ async def upload_csv(background_tasks: BackgroundTasks, file: UploadFile = File(
 
 def process_csv(names_storage: List[str]):
     try:
+        if embedder.target_dim != embedder.embedding_dim:
+            embedder.fit_pca(app.names_storage + names_storage)
         # Store embedded vectors for semantic search
         for name in names_storage:
             vector = embedder.embed(name)
@@ -119,6 +131,42 @@ async def delete_collection():
     return {"message": "DB deleted successfully."}
 
 
+@app.post("/overrides/")
+async def add_override(override_request: OverrideRequest):
+    tag = override_request.tag
+    synonyms = override_request.synonyms
+    if not tag or not synonyms:
+        raise HTTPException(status_code=400, detail="Tag and synonyms are required.")
+    # Store the synonyms in the in-memory dictionary
+    app.manual_overrides[tag] = synonyms
+
+    # Embed and store each synonym in the vector database
+    for synonym in synonyms:
+        synonym_vector = embedder.embed(synonym)
+        vec_db.store(synonym_vector, {"name": synonym, "original_tag": tag})
+
+    return {"message": f"Override for '{tag}' added successfully.", "overrides": app.manual_overrides}
+
+
+@app.get("/overrides/")
+async def get_overrides():
+    return {"manual_overrides": app.manual_overrides}
+
+
+@app.delete("/overrides/{tag}")
+async def delete_override(tag: str):
+    if tag in app.manual_overrides:
+        # Remove the synonyms from the vector database
+        for synonym in app.manual_overrides[tag]:
+            vec_db.delete_by_payload({"name": synonym, "original_tag": tag})
+
+        # Remove the override from the in-memory dictionary
+        del app.manual_overrides[tag]
+        return {"message": f"Override for '{tag}' deleted successfully."}
+    else:
+        raise HTTPException(status_code=404, detail=f"No override found for tag '{tag}'.")
+
+
 @app.get("/search/")
 async def search(query: str, k: int = 5):
     if not query:
@@ -131,8 +179,26 @@ async def search(query: str, k: int = 5):
     query_vector = embedder.embed(query)
     semantic_matches = vec_db.find_closest(query_vector, k)
 
+    # Include matches for synonyms
+    if query in app.manual_overrides:
+        for synonym in app.manual_overrides[query]:
+            synonym_vector = embedder.embed(synonym)
+            semantic_matches.extend(vec_db.find_closest(synonym_vector, k))
+
+    # Remove duplicate results (if any) and sort by score
+    seen = set()
+    final_matches = []
+    for match in semantic_matches:
+        if match.payload["name"] not in seen:
+            seen.add(match.payload["name"])
+            final_matches.append(match)
+
+    # Sort the final results by score
+    final_matches = sorted(final_matches, key=lambda x: x.score, reverse=True)[:k]
+
     # Formatting the response
-    semantic_results = [{"name": match.payload["name"], "score": match.score} for match in semantic_matches]
+    semantic_results = [{"name": match.payload["name"], "score": match.score}
+                        for match in final_matches]
     typo_results = [{"name": match["matched"], "score": match["score"]} for match in fuzzy_matches]
 
     response = {"match": {"semantic": semantic_results, "typo": typo_results}}

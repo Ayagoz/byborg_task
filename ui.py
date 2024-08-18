@@ -58,6 +58,35 @@ def check_task_status():
         return "Something bad happened"
 
 
+def add_override(tag, synonyms):
+    synonyms_list = [syn.strip() for syn in synonyms.split(',')]
+    data = {"tag": tag, "synonyms": synonyms_list}
+    response = requests.post(f"{BASE_URL}/overrides/", json=data)
+    if response.status_code == 200:
+        return response.json()['message']
+    else:
+        return response.json()['detail']
+
+
+def delete_override(tag):
+    response = requests.delete(f"{BASE_URL}/overrides/{tag}")
+    if response.status_code == 200:
+        return response.json()['message']
+    else:
+        return response.json()['detail']
+
+
+def get_overrides():
+    response = requests.get(f"{BASE_URL}/overrides/")
+    if response.status_code == 200:
+        overrides = response.json()['manual_overrides']
+        overrides_df = pd.DataFrame([{'Tag': tag, 'Synonyms': ', '.join(synonyms)}
+                                    for tag, synonyms in overrides.items()])
+        return overrides_df
+    else:
+        return pd.DataFrame()
+
+
 # Gradio interface
 with gr.Blocks(css="body { font-family: Arial, sans-serif; } footer { visibility: hidden }") as demo:
     gr.Markdown(
@@ -65,13 +94,17 @@ with gr.Blocks(css="body { font-family: Arial, sans-serif; } footer { visibility
 
     with gr.Tab("Search"):
         with gr.Row():
-            query = gr.Textbox(label="Search Query", placeholder="Enter tag to search", elem_classes="tab-container")
+            query = gr.Textbox(label="Search Query",
+                               placeholder="Enter tag to search", elem_classes="tab-container")
             k = gr.Number(label="Number of Results", value=5, elem_classes="tab-container")
         search_button = gr.Button("Search", elem_classes="tab-container")
-        semantic_table = gr.Dataframe(label="Semantic Matches", interactive=False, elem_classes="tab-container")
-        typo_table = gr.Dataframe(label="Typo Matches", interactive=False, elem_classes="tab-container")
+        semantic_table = gr.Dataframe(label="Semantic Matches",
+                                      interactive=False, elem_classes="tab-container")
+        typo_table = gr.Dataframe(label="Typo Matches", interactive=False,
+                                  elem_classes="tab-container")
 
-        search_button.click(fn=search_names, inputs=[query, k], outputs=[semantic_table, typo_table])
+        search_button.click(fn=search_names, inputs=[query, k], outputs=[
+                            semantic_table, typo_table])
         query.submit(fn=search_names, inputs=[query, k], outputs=[semantic_table, typo_table])
 
     with gr.Tab("Upload CSV"):
@@ -83,17 +116,49 @@ with gr.Blocks(css="body { font-family: Arial, sans-serif; } footer { visibility
                         """)
         csv_file = gr.File(label="Upload CSV File", type='filepath', elem_classes="tab-container")
         upload_button = gr.Button("Upload", elem_classes="tab-container")
-        upload_status = gr.Textbox(label="Upload Status", interactive=False, elem_classes="tab-container")
+        upload_status = gr.Textbox(label="Upload Status", interactive=False,
+                                   elem_classes="tab-container")
 
         upload_button.click(fn=upload_csv, inputs=csv_file, outputs=upload_status)
 
         status_button_upload = gr.Button("Check Task Status", elem_classes="tab-container")
-        status_display_upload = gr.Textbox(label="Task Status", interactive=False, elem_classes="tab-container")
+        status_display_upload = gr.Textbox(
+            label="Task Status", interactive=False, elem_classes="tab-container")
         status_button_upload.click(fn=check_task_status, outputs=status_display_upload)
 
         delete_button = gr.Button("Delete Collection", elem_classes="tab-container")
-        delete_status = gr.Textbox(label="Delete Status", interactive=False, elem_classes="tab-container")
+        delete_status = gr.Textbox(label="Delete Status", interactive=False,
+                                   elem_classes="tab-container")
         delete_button.click(fn=delete_collection, outputs=delete_status)
+
+    with gr.Tab("Manage Overrides"):
+        with gr.Row():
+            tag = gr.Textbox(label="Tag", placeholder="Enter the tag to override",
+                             elem_classes="tab-container")
+            synonyms = gr.Textbox(
+                label="Synonyms", placeholder="Enter synonyms separated by commas", elem_classes="tab-container")
+        add_override_button = gr.Button("Add Override", elem_classes="tab-container")
+        add_override_status = gr.Textbox(
+            label="Status", interactive=False, elem_classes="tab-container")
+
+        add_override_button.click(fn=add_override, inputs=[
+                                  tag, synonyms], outputs=add_override_status)
+
+        with gr.Row():
+            delete_tag = gr.Textbox(
+                label="Tag", placeholder="Enter the tag to delete override", elem_classes="tab-container")
+        delete_override_button = gr.Button("Delete Override", elem_classes="tab-container")
+        delete_override_status = gr.Textbox(
+            label="Delete Status", interactive=False, elem_classes="tab-container")
+
+        delete_override_button.click(fn=delete_override, inputs=delete_tag,
+                                     outputs=delete_override_status)
+
+        view_overrides_button = gr.Button("View All Overrides", elem_classes="tab-container")
+        overrides_table = gr.Dataframe(label="Current Overrides",
+                                       interactive=False, elem_classes="tab-container")
+
+        view_overrides_button.click(fn=get_overrides, outputs=overrides_table)
 
 # Launch the interface
 demo.launch(server_name="0.0.0.0")

@@ -1,4 +1,5 @@
 import pandas as pd
+import random
 
 tags = [
     "Apollo 11", "Moon", "Spacecraft", "Orbiter", "Lander", "Rover", "Probe", "Shuttle", "Satellite", "Space Station",
@@ -33,7 +34,9 @@ tags = [
     "Space Movie", "Space TV Show"
 ]
 
+# num = random.randint(1, len(tags))
+# random.shuffle(tags)
+# tags_df = pd.DataFrame(tags[:num], columns=["name"])
 tags_df = pd.DataFrame(tags, columns=["name"])
-
 file_path = "dummy_tags.csv"
 tags_df.to_csv(file_path, index=True)
